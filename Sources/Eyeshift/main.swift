@@ -38,7 +38,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var welcomeWindow: NSWindow?
     private let defaults = UserDefaults.standard
 
-    private var paused = false { didSet { refreshStatus() } }
+    private var paused = false {
+        didSet {
+            if paused { trackers.forEach { $0.stop() } }
+            else if AVCaptureDevice.authorizationStatus(for: .video) == .authorized { trackers.forEach { $0.start() } }
+            refreshStatus()
+        }
+    }
 
     func applicationDidFinishLaunching(_ n: Notification) {
         defaults.register(defaults: settingDefaults)
@@ -109,15 +115,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         defer { refreshStatus() }
         if let ls = lastSwitch, Date().timeIntervalSince(ls.at) > 5 { settleLastSwitch() }
         guard !paused, !r.isEmpty else { return }
-        // averaging the last few estimates calms the jitter the filter lets through
-        let n = max(1, UserDefaults.standard.integer(forKey: "smoothing"))
-        recentGaze = Array((recentGaze + [gazeFilter.filter(blend(r) { $0.predict($1) })]).suffix(n))
-        recentHead = Array((recentHead + [headFilter.filter(blend(r) { $0.predictHead($1) })]).suffix(n))
-        smoothed = Self.mean(recentGaze)
-        smoothedHead = Self.mean(recentHead)
-        if let dot, let s = smoothed {
-            let h = NSScreen.screens.first?.frame.height ?? 0
-            dot.setFrameOrigin(NSPoint(x: s.x - 8, y: h - s.y - 8))
+        // Fast saccade reset + stillness deadzone: instant jump on large gaze shifts (>180pt),
+        // rock-steady hold when motionless (<18pt jitter), and light smoothing in between.
+        let n = max(1, min(4, UserDefaults.standard.integer(forKey: "smoothing")))
+        let fg = gazeFilter.filter(blend(r) { $0.predict($1) })
+        let fh = headFilter.filter(blend(r) { $0.predictHead($1) })
+        if let prev = smoothed, hypot(fg.x - prev.x, fg.y - prev.y) > 180 {
+            recentGaze = [fg]
+        } else {
+            recentGaze = Array((recentGaze + [fg]).suffix(n))
+        }
+        if let prevH = smoothedHead, hypot(fh.x - prevH.x, fh.y - prevH.y) > 180 {
+            recentHead = [fh]
+        } else {
+            recentHead = Array((recentHead + [fh]).suffix(n))
+        }
+        let candGaze = Self.mean(recentGaze)
+        let candHead = Self.mean(recentHead)
+        if let prev = smoothed, hypot(candGaze.x - prev.x, candGaze.y - prev.y) < 18 {
+            // Hold position inside the stillness deadzone so the dot doesn't wander while motionless
+        } else {
+            smoothed = candGaze
+            if let dot, let s = smoothed {
+                let h = NSScreen.screens.first?.frame.height ?? 0
+                dot.setFrameOrigin(NSPoint(x: s.x - 8, y: h - s.y - 8))
+            }
+        }
+        if let prevH = smoothedHead, hypot(candHead.x - prevH.x, candHead.y - prevH.y) < 18 {
+            // Hold head estimate inside deadzone
+        } else {
+            smoothedHead = candHead
         }
         let lines = r.compactMap { x in x.model.keyboardLine.map { ($0, x.weight) } }
         let kb = lines.isEmpty ? nil : lines.map { $0.0 * $0.1 }.reduce(0, +) / lines.map(\.1).reduce(0, +)
@@ -372,8 +399,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
 /// One Euro filter (Casiez et al.): heavy smoothing while the point is still, little lag when it moves fast.
 struct OneEuro {
-    var minCutoff = 0.8   // Hz; lower = steadier when still
-    var beta = 0.004      // higher = less lag on fast moves
+    var minCutoff = 0.4   // Hz; lower = steadier when still
+    var beta = 0.015      // higher = less lag on fast moves
     private var last: (p: CGPoint, d: CGPoint, t: Date)?
 
     mutating func filter(_ p: CGPoint, at t: Date = Date()) -> CGPoint {
