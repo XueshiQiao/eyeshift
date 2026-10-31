@@ -102,7 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private func handle(_ i: Int, _ f: [Double]?, _ camera: String) {
         cameraIDs[i] = camera
-        if let calibration { if let f { calibration.add(f, camera: i) }; return }
+        if let calibration { if let f { calibration.add(f, camera: i, id: camera) }; return }
         latest[i] = f.map { ($0, Date()) }
         let r = readings()
         faceVisible = !r.isEmpty
