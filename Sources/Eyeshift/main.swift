@@ -23,7 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private let pauseItem = NSMenuItem(title: "", action: #selector(togglePause), keyEquivalent: "g")
     private var smoothed: CGPoint?
     private var smoothedHead: CGPoint?
-    private var gazeFilter = OneEuro(), headFilter = OneEuro()
+    private var gazeFilter = OneEuro(), headFilter = OneEuro(minCutoff: 2.0, beta: 0.05)
     private var recentGaze: [CGPoint] = [], recentHead: [CGPoint] = []
     private var faceVisible = false
     private var latest: [(f: [Double], at: Date)?] = [nil, nil]
@@ -125,13 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         } else {
             recentGaze = Array((recentGaze + [fg]).suffix(n))
         }
-        if let prevH = smoothedHead, hypot(fh.x - prevH.x, fh.y - prevH.y) > 180 {
-            recentHead = [fh]
-        } else {
-            recentHead = Array((recentHead + [fh]).suffix(n))
-        }
         let candGaze = Self.mean(recentGaze)
-        let candHead = Self.mean(recentHead)
         if let prev = smoothed, hypot(candGaze.x - prev.x, candGaze.y - prev.y) < 18 {
             // Hold position inside the stillness deadzone so the dot doesn't wander while motionless
         } else {
@@ -141,11 +135,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 dot.setFrameOrigin(NSPoint(x: s.x - 8, y: h - s.y - 8))
             }
         }
-        if let prevH = smoothedHead, hypot(candHead.x - prevH.x, candHead.y - prevH.y) < 18 {
-            // Hold head estimate inside deadzone
-        } else {
-            smoothedHead = candHead
-        }
+        // Head estimate for screen switching bypasses multi-frame queue and deadzone so switching screens
+        // after staring at one monitor for a long time has zero cold-start lag.
+        smoothedHead = fh
         let lines = r.compactMap { x in x.model.keyboardLine.map { ($0, x.weight) } }
         let kb = lines.isEmpty ? nil : lines.map { $0.0 * $0.1 }.reduce(0, +) / lines.map(\.1).reduce(0, +)
         focuser.update(gaze: smoothed!, head: smoothedHead!, keyboardLine: kb)
@@ -344,7 +336,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         smoothed = nil
         smoothedHead = nil
         gazeFilter = OneEuro()
-        headFilter = OneEuro()
+        headFilter = OneEuro(minCutoff: 2.0, beta: 0.05)
         recentGaze = []
         recentHead = []
         calibration = Calibration(cameras: cameraIDs) { [weak self] result in
